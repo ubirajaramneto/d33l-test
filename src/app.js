@@ -47,9 +47,9 @@ app.get("/jobs/unpaid", getProfile, async (req, res) => {
         { clientId: currentProfileId },
       ],
       status: { [Op.not]: "terminated" },
-      '$Jobs.paid$': {[Op.eq]: null}
+      "$Jobs.paid$": { [Op.eq]: null },
     },
-    include: [{model: Job, as:'Jobs'}],
+    include: [{ model: Job, as: "Jobs" }],
   });
   res.json(contracts);
 });
