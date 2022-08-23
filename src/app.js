@@ -8,10 +8,21 @@ app.use(bodyParser.json());
 app.set("sequelize", sequelize);
 app.set("models", sequelize.models);
 
-/**
- * FIX ME!
- * @returns contract by id
- */
+// this query is used in multiple places
+async function getUnpaidJobs(currentProfileId) {
+  return await Contract.findAll({
+    where: {
+      [Op.or]: [
+        { contractorId: currentProfileId },
+        { clientId: currentProfileId },
+      ],
+      status: { [Op.not]: "terminated" },
+      "$Jobs.paid$": { [Op.eq]: null },
+    },
+    include: [{ model: Job, as: "Jobs" }],
+  });
+}
+
 app.get("/contracts/:id", getProfile, async (req, res) => {
   const currentProfileId = req.profile.dataValues.id;
   const { Contract } = req.app.get("models");
@@ -40,17 +51,7 @@ app.get("/contracts", getProfile, async (req, res) => {
 // GET /jobs/unpaid - Get all unpaid jobs for a user (either a client or contractor), for active contracts only.
 app.get("/jobs/unpaid", getProfile, async (req, res) => {
   const currentProfileId = req.profile.dataValues.id;
-  const contracts = await Contract.findAll({
-    where: {
-      [Op.or]: [
-        { contractorId: currentProfileId },
-        { clientId: currentProfileId },
-      ],
-      status: { [Op.not]: "terminated" },
-      "$Jobs.paid$": { [Op.eq]: null },
-    },
-    include: [{ model: Job, as: "Jobs" }],
-  });
+  const contracts = await getUnpaidJobs(currentProfileId);
   res.json(contracts);
 });
 
@@ -75,7 +76,7 @@ app.post("/jobs/:job_id/pay", getProfile, async (req, res) => {
     });
   // check if the job was already paid for
   if (job.paid)
-    return res.status(422).json({error: 'job was already paid for'})
+    return res.status(422).json({ error: "job was already paid for" });
   // after that, lets check to see if the client has balance
   const clientProfile = await Profile.findOne({ where: { id } });
   if (clientProfile.balance < job.price)
@@ -133,6 +134,65 @@ app.post("/jobs/:job_id/pay", getProfile, async (req, res) => {
   } catch (e) {
     await t.rollback();
     return res.status(500).json({ error: "payment could not be processed" });
+  }
+});
+
+// NOTE: I will assume that it is the client themselves that will be depositing to their balances
+// NOTE: I will assume that the client can only add to their own account
+// POST /balances/deposit/:userId - Deposits money into the the the balance of a client, a client can't deposit more than 25% his total of jobs to pay. (at the deposit moment)
+app.post("/balances/deposit/:userId", getProfile, async (req, res) => {
+  const { id, type } = req.profile.dataValues;
+  const { amount } = req.body;
+  const { userId } = req.params;
+
+  // lets make sure that only clients can deposit to their accounts
+  if (type !== "client")
+    return res
+      .status(422)
+      .json({ error: "only clients can deposit to their accounts" });
+  // lets make sure the client can only deposit into his own account
+  if (id.toString() !== userId)
+    return res
+      .status(422)
+      .json({ error: "you can only deposit on your own account" });
+
+  const unpaidJobs = await getUnpaidJobs(id);
+  const clientProfile = await Profile.findOne({
+    where: { id: userId },
+  });
+  let totalUnpaidJobs = 0;
+  unpaidJobs.map((contract) => {
+    contract.Jobs.map((job) => {
+      totalUnpaidJobs += job.price;
+    });
+  });
+
+  if (amount > totalUnpaidJobs / 4)
+    return res.status(422).json({
+      error: "you can not deposit more than 25% of your total jobs to pay",
+      suggestion: `you can only deposit ${(totalUnpaidJobs / 4).toFixed(
+        2
+      )} at the moment`,
+    });
+
+  const t = await sequelize.transaction();
+  try {
+    const finalAmount = (clientProfile.balance + amount).toFixed(2)
+    await Profile.update(
+      {
+        balance: finalAmount,
+      },
+      {
+        transaction: t,
+        where: { id },
+      }
+    );
+
+    await t.commit();
+    return res.status(200).json({ payload: { balance: finalAmount } });
+  } catch (e) {
+    await t.rollback();
+    return res.status(500).json("could not deposit to account");
   }
 });
 
