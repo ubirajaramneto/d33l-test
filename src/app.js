@@ -247,7 +247,6 @@ app.get("/admin/best-profession", async (req, res) => {
 // GET /admin/best-clients?start=<date>&end=<date>&limit=<integer> - returns the clients the paid the most for jobs in the query time period. limit query parameter should be applied, default limit is 2.
 app.get("/admin/best-clients", async (req, res) => {
   const { start, end, limit = MIN_LIMIT } = req.query;
-  console.log("LIMIT: ", limit);
   const result = await sequelize.query(highestPayingClientByDateQuery, {
     replacements: { start: new Date(start), end: new Date(end), limit },
     type: QueryTypes.SELECT,
