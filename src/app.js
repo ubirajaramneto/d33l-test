@@ -218,7 +218,7 @@ app.get("/admin/best-profession", async (req, res) => {
   const result = await sequelize.query(
     bestProfessionByDateQuery,
     {
-      replacements: { start, end },
+      replacements: { start: new Date(start), end: new Date(end) },
       type: QueryTypes.SELECT
     }
   );
