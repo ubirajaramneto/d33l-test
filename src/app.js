@@ -19,7 +19,7 @@ async function getUnpaidJobs(currentProfileId) {
         { contractorId: currentProfileId },
         { clientId: currentProfileId },
       ],
-      status: { [Op.not]: "terminated" },
+      status: { [Op.eq]: "in_progress" },
       "$Jobs.paid$": { [Op.eq]: null },
     },
     include: [{ model: Job, as: "Jobs" }],
