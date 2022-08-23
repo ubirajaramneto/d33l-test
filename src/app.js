@@ -2,11 +2,14 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const { sequelize, Contract, Job, Profile } = require("./model");
 const { getProfile } = require("./middleware/getProfile");
-const { Op, QueryTypes} = require("sequelize");
+const { Op, QueryTypes } = require("sequelize");
 const app = express();
 app.use(bodyParser.json());
 app.set("sequelize", sequelize);
 app.set("models", sequelize.models);
+
+// CONSTANTS
+const MIN_LIMIT = 20;
 
 // this query is used in multiple places
 async function getUnpaidJobs(currentProfileId) {
@@ -23,12 +26,45 @@ async function getUnpaidJobs(currentProfileId) {
   });
 }
 
+// RAW SQL QUERIES
+
+const bestProfessionByDateQuery =
+  "SELECT\n" +
+  "    sum(price),\n" +
+  "    profession\n" +
+  "FROM\n" +
+  "    Jobs\n" +
+  "INNER JOIN Contracts C\n" +
+  "    on C.id = Jobs.ContractId\n" +
+  "INNER JOIN Profiles P\n" +
+  "    on C.ContractorId = P.id\n" +
+  "WHERE\n" +
+  "    paymentDate BETWEEN :start AND :end AND\n" +
+  "    paid = true\n" +
+  "group by profession\n" +
+  "order by price desc;";
+
+const highestPayingClientByDateQuery =
+  "select\n" +
+  "    sum(price) as total,\n" +
+  "    ClientId,\n" +
+  "    firstName,\n" +
+  "    lastName\n" +
+  "from Jobs\n" +
+  "inner join Contracts C on C.id = Jobs.ContractId\n" +
+  "inner join Profiles P on P.id = C.ClientId\n" +
+  "where paymentDate BETWEEN :start AND :end AND\n" +
+  "    paid = true\n" +
+  "group by ClientId\n" +
+  "order by total desc\n" +
+  "limit :limit;";
+
 app.get("/contracts/:id", getProfile, async (req, res) => {
-  const currentProfileId = req.profile.dataValues.id;
+  const { id: currentProfileId } = req.profile.dataValues;
   const { Contract } = req.app.get("models");
   const { id } = req.params;
   const contract = await Contract.findOne({ where: { id } });
-  if (currentProfileId !== contract.contractorId) return res.status(401).end();
+  if (currentProfileId !== contract.ContractorId) return res.status(401).end();
   if (!contract) return res.status(404).end();
   res.json(contract);
 });
@@ -198,30 +234,24 @@ app.post("/balances/deposit/:userId", getProfile, async (req, res) => {
   }
 });
 
-const bestProfessionByDateQuery = 'SELECT\n' +
-  '    sum(price) as total,\n' +
-  '    profession\n' +
-  'FROM\n' +
-  '    Jobs\n' +
-  'INNER JOIN Contracts C\n' +
-  '    on C.id = Jobs.ContractId\n' +
-  'INNER JOIN Profiles P\n' +
-  '    on C.ContractorId = P.id\n' +
-  'WHERE\n' +
-  '    paymentDate BETWEEN :start AND :end \n' +
-  'group by profession\n' +
-  'order by price desc;'
-
 // GET /admin/best-profession?start=<date>&end=<date> - Returns the profession that earned the most money
 app.get("/admin/best-profession", async (req, res) => {
   const { start, end } = req.query;
-  const result = await sequelize.query(
-    bestProfessionByDateQuery,
-    {
-      replacements: { start: new Date(start), end: new Date(end) },
-      type: QueryTypes.SELECT
-    }
-  );
+  const result = await sequelize.query(bestProfessionByDateQuery, {
+    replacements: { start: new Date(start), end: new Date(end) },
+    type: QueryTypes.SELECT,
+  });
+  res.status(200).json({ payload: result });
+});
+
+// GET /admin/best-clients?start=<date>&end=<date>&limit=<integer> - returns the clients the paid the most for jobs in the query time period. limit query parameter should be applied, default limit is 2.
+app.get("/admin/best-clients", async (req, res) => {
+  const { start, end, limit = MIN_LIMIT } = req.query;
+  console.log("LIMIT: ", limit);
+  const result = await sequelize.query(highestPayingClientByDateQuery, {
+    replacements: { start: new Date(start), end: new Date(end), limit },
+    type: QueryTypes.SELECT,
+  });
   res.status(200).json({ payload: result });
 });
 
