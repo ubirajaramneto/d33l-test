@@ -2,7 +2,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const { sequelize, Contract, Job, Profile } = require("./model");
 const { getProfile } = require("./middleware/getProfile");
-const { Op } = require("sequelize");
+const { Op, QueryTypes} = require("sequelize");
 const app = express();
 app.use(bodyParser.json());
 app.set("sequelize", sequelize);
@@ -58,7 +58,7 @@ app.get("/jobs/unpaid", getProfile, async (req, res) => {
 // NOTE: On a production system, this would be a stored procedure inside the database.
 // POST /jobs/:job_id/pay - Pay for a job, a client can only pay if his balance >= the amount to pay. The amount should be moved from the client's balance to the contractor balance.
 app.post("/jobs/:job_id/pay", getProfile, async (req, res) => {
-  const { id, type } = req.profile.dataValues;
+  const { id: currentProfileId, type } = req.profile.dataValues;
   const jobId = req.params.job_id;
   // payment should only happen from client
   if (type === "contractor")
@@ -70,7 +70,7 @@ app.post("/jobs/:job_id/pay", getProfile, async (req, res) => {
     },
     include: [{ model: Contract, as: "Contract" }],
   });
-  if (job.Contract.ClientId !== id)
+  if (job.Contract.ClientId !== currentProfileId)
     return res.status(401).json({
       error: "This job does not belong to a contract you are part of",
     });
@@ -78,7 +78,9 @@ app.post("/jobs/:job_id/pay", getProfile, async (req, res) => {
   if (job.paid)
     return res.status(422).json({ error: "job was already paid for" });
   // after that, lets check to see if the client has balance
-  const clientProfile = await Profile.findOne({ where: { id } });
+  const clientProfile = await Profile.findOne({
+    where: { id: currentProfileId },
+  });
   if (clientProfile.balance < job.price)
     return res.status(422).json({ error: "Insuficient balance" });
 
@@ -141,7 +143,7 @@ app.post("/jobs/:job_id/pay", getProfile, async (req, res) => {
 // NOTE: I will assume that the client can only add to their own account
 // POST /balances/deposit/:userId - Deposits money into the the the balance of a client, a client can't deposit more than 25% his total of jobs to pay. (at the deposit moment)
 app.post("/balances/deposit/:userId", getProfile, async (req, res) => {
-  const { id, type } = req.profile.dataValues;
+  const { id: currentProfileId, type } = req.profile.dataValues;
   const { amount } = req.body;
   const { userId } = req.params;
 
@@ -151,12 +153,12 @@ app.post("/balances/deposit/:userId", getProfile, async (req, res) => {
       .status(422)
       .json({ error: "only clients can deposit to their accounts" });
   // lets make sure the client can only deposit into his own account
-  if (id.toString() !== userId)
+  if (currentProfileId.toString() !== userId)
     return res
       .status(422)
       .json({ error: "you can only deposit on your own account" });
 
-  const unpaidJobs = await getUnpaidJobs(id);
+  const unpaidJobs = await getUnpaidJobs(currentProfileId);
   const clientProfile = await Profile.findOne({
     where: { id: userId },
   });
@@ -177,14 +179,14 @@ app.post("/balances/deposit/:userId", getProfile, async (req, res) => {
 
   const t = await sequelize.transaction();
   try {
-    const finalAmount = (clientProfile.balance + amount).toFixed(2)
+    const finalAmount = (clientProfile.balance + amount).toFixed(2);
     await Profile.update(
       {
         balance: finalAmount,
       },
       {
         transaction: t,
-        where: { id },
+        where: { id: currentProfileId },
       }
     );
 
@@ -194,6 +196,33 @@ app.post("/balances/deposit/:userId", getProfile, async (req, res) => {
     await t.rollback();
     return res.status(500).json("could not deposit to account");
   }
+});
+
+const bestProfessionByDateQuery = 'SELECT\n' +
+  '    sum(price) as total,\n' +
+  '    profession\n' +
+  'FROM\n' +
+  '    Jobs\n' +
+  'INNER JOIN Contracts C\n' +
+  '    on C.id = Jobs.ContractId\n' +
+  'INNER JOIN Profiles P\n' +
+  '    on C.ContractorId = P.id\n' +
+  'WHERE\n' +
+  '    paymentDate BETWEEN :start AND :end \n' +
+  'group by profession\n' +
+  'order by price desc;'
+
+// GET /admin/best-profession?start=<date>&end=<date> - Returns the profession that earned the most money
+app.get("/admin/best-profession", async (req, res) => {
+  const { start, end } = req.query;
+  const result = await sequelize.query(
+    bestProfessionByDateQuery,
+    {
+      replacements: { start, end },
+      type: QueryTypes.SELECT
+    }
+  );
+  res.status(200).json({ payload: result });
 });
 
 module.exports = app;
